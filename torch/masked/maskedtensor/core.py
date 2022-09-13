@@ -337,12 +337,12 @@ class MaskedTensor(torch.Tensor):
         self._validate_members()
 
     @staticmethod
-    def from_values(data, mask):
+    def _from_values(data, mask):
         """ Differentiable constructor for MaskedTensor """
         class Constructor(torch.autograd.Function):
             @staticmethod
             def forward(ctx, data, mask):
-                return MaskedTensor(data.clone(), mask.clone())
+                return MaskedTensor(data, mask)
 
             @staticmethod
             def backward(ctx, grad_output):
@@ -382,10 +382,6 @@ class MaskedTensor(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
-
-        if func is torch.nn.functional.multi_head_attention_forward:
-            from .functions import multi_head_attention_forward as mha_mt
-            return mha_mt(*args, **kwargs)
 
         from .reductions import _apply_reduction, _is_reduction
         if _is_reduction(func):
