@@ -785,11 +785,20 @@ def jvp(func: Callable, primals: Any, tangents: Any, *, strict: bool = False, ha
          >>> assert torch.allclose(output, x + y)
 
     """
+
+    return _jvp_with_argnums(func, primals, tangents, argnums=None, strict=strict, has_aux=has_aux)
+
+
+# only to be used with jacrev to allow for all passed variables to be wrapped correctly, even if they don't participate
+# in autograd
+def _jvp_with_argnums(func: Callable, primals: Any, tangents: Any, argnums: Optional[argnums_t], *,
+                      strict: bool = False, has_aux: bool):
     if not isinstance(primals, tuple):
         raise RuntimeError(
             f'{jvp_str}: Expected primals to be a tuple. '
             f'E.g. it should be valid to call f(*primals).')
-    flat_primals, primals_spec = tree_flatten(primals)
+    diff_args = primals if argnums is None else _slice_argnums(primals, argnums)
+    flat_primals, primals_spec = tree_flatten(diff_args)
     flat_tangents, tangents_spec = tree_flatten(tangents)
     if primals_spec != tangents_spec:
         raise RuntimeError(
@@ -810,6 +819,9 @@ def jvp(func: Callable, primals: Any, tangents: Any, *, strict: bool = False, ha
                 flat_duals = tuple(fwAD.make_dual(p, t)
                                    for p, t in zip(flat_primals, flat_tangents))
                 duals = tree_unflatten(flat_duals, primals_spec)
+                if argnums is not None:
+                    primals = _wrap_all_tensors(primals, level)
+                    duals = _replace_args(primals, duals, argnums)
                 result_duals = func(*duals)
                 if has_aux:
                     if not (isinstance(result_duals, tuple) and len(result_duals) == 2):
@@ -956,14 +968,14 @@ def jacfwd(func: Callable, argnums: argnums_t = 0, has_aux: bool = False, *, ran
     """
     @wraps(func)
     def wrapper_fn(*args):
-        f_wrapper, primals = _argnums_partial(func, args, argnums)
+        primals = args if argnums is None else _slice_argnums(args, argnums)
         flat_primals, primals_spec = tree_flatten(primals)
         flat_primals_numels = tuple(p.numel() for p in flat_primals)
         flat_basis = _construct_standard_basis_for(flat_primals, flat_primals_numels)
         basis = tree_unflatten(flat_basis, primals_spec)
 
         def push_jvp(basis):
-            output = jvp(f_wrapper, primals, basis, has_aux=has_aux)
+            output = _jvp_with_argnums(func, args, basis, argnums=argnums, has_aux=has_aux)
             if has_aux:
                 _, jvp_out, aux = output
                 return jvp_out, aux
