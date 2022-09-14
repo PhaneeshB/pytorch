@@ -19,6 +19,8 @@ from torch.testing._internal.common_utils import (
     TestCase,
 )
 
+from torch.testing._internal.common_device_type import onlyCUDA
+
 import unittest
 
 class CheckpointWrapperTest(TestCase):
@@ -188,6 +190,55 @@ class CheckpointWrapperTest(TestCase):
         state_dict = lin.state_dict()
         for fqn, _ in lin.named_parameters():
             self.assertTrue(fqn in state_dict, msg=f"{fqn} not in state_dict.")
+
+    @onlyCUDA
+    def test_checkpoint_wrapper_cpu_offload(self):
+        model = nn.Sequential(
+            nn.Linear(10, 10),
+            nn.Linear(10, 10),
+            nn.Linear(10, 10),
+        ).cuda()
+
+        # Patch saved_tensor_hooks to make the unpack keep the tensor on CPU for
+        # testing, otherwise the tensor access during the DFS will cause orig
+        # unpack to run, transferring the tensor back to GPU.
+        def patched_init(saved_tensor_hook_obj, pack_hook, _):
+            saved_tensor_hook_obj.pack_hook = pack_hook
+
+            def testing_cpu_offload_unpack_hook(packed):
+                _, tensor = packed
+                return tensor
+
+            saved_tensor_hook_obj.unpack_hook = testing_cpu_offload_unpack_hook
+
+        torch.autograd.graph.saved_tensors_hooks.__init__ = patched_init
+
+        model = checkpoint_wrapper(model, offload_to_cpu=True)
+
+        inp = torch.randn(3, 10, device='cuda')
+        loss = model(inp).sum()
+
+        # All autograd saved tensors should be offloaded to CPU.
+        offload_verified = False
+
+        def dfs(grad_fn):
+            for e in dir(grad_fn):
+                if not e.startswith('_saved_'):
+                    continue
+
+                saved = getattr(grad_fn, e)
+                if isinstance(saved, torch.Tensor):
+                    self.assertEqual(torch.device("cpu"), saved.device)
+                    nonlocal offload_verified
+                    offload_verified = True
+
+            if hasattr(grad_fn, 'next_functions'):
+                for next_grad_fn, _ in grad_fn.next_functions:
+                    dfs(next_grad_fn)
+
+        dfs(loss.grad_fn)
+
+        self.assertTrue(offload_verified)
 
 if __name__ == "__main__":
     run_tests()
