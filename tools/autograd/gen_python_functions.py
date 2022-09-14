@@ -81,7 +81,6 @@ from .gen_trace_type import should_trace
 
 # These functions require manual Python bindings or are not exposed to Python
 _SKIP_PYTHON_BINDINGS = [
-    "alias",
     "contiguous",
     "is_cuda",
     "is_sparse",
